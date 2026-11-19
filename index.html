@@ -46,6 +46,7 @@ a{color:var(--brand)}
 .hsel select{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:var(--r);padding:0 6px;height:28px}
 .hsel select option{color:var(--ink)}
 .user{display:flex;align-items:center;gap:8px;padding-left:12px;border-left:1px solid rgba(255,255,255,.25)}
+.hlink{background:none;border:1px solid rgba(255,255,255,.45);color:#fff;font:600 12px "Open Sans",sans-serif;padding:5px 10px;border-radius:3px;cursor:pointer;text-decoration:none;margin-left:8px}.hlink:hover{background:rgba(255,255,255,.12)}
 .avatar{width:28px;height:28px;border-radius:50%;background:#fff;color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px}
 .user .n{font-weight:600;line-height:1.1;white-space:nowrap}.user .txt{white-space:nowrap}
 @media (max-width:1560px){.brand .sys,.brand .sep{display:none}}
@@ -293,11 +294,12 @@ body.noia .ia-only{display:none}
   </nav>
   <span class="sp"></span>
   <div class="hsel"><label for="hUnidade">Unidade</label><select id="hUnidade"></select></div>
-  <div class="hsel" title="Somente no protótipo: troca o perfil para testar as permissões"><label for="hPerfil">Perfil <span class="proto">PROTÓTIPO</span></label><select id="hPerfil"></select></div>
-  <div class="user"><span class="avatar" id="uAv"></span><span class="txt"><span class="n" id="uNome"></span><br><span class="p" id="uPerfil"></span></span></div>
+  <div class="user"><span class="avatar" id="uAv"></span><span class="txt"><span class="n" id="uNome"></span><br><span class="p" id="uPerfil"></span></span></div><a href="https://tkichelewski-web.github.io/portal-ip/" class="hlink">Portal</a><button class="hlink" id="btnSair" onclick="PROD.sair()">Sair</button>
 </header>
 <main id="app"></main>
 <div id="modal"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>window.MODO_PROD=true</script>
 <script src="pptxgen.bundle.js"></script>
 <script src="app.js"></script>
 </body>

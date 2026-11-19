@@ -908,3 +908,157 @@ if(window.claude&&typeof window.claude.use==='function'){
  claude.use('downloads').then(d=>{dl=d}).catch(()=>{});
  claude.use('sample').then(s=>{iaSample=s;if(s)document.body.classList.remove('noia')}).catch(()=>{});
 }
+
+/* ===================== VERSÃO DE PRODUÇÃO (Supabase + login do Portal) =====================
+   Só entra no app.js de produção (montar_app_producao.bat). O protótipo não usa este arquivo. */
+const PROD=(()=>{
+ const SB_URL='https://umpctnchhmyvpjwxllaj.supabase.co';
+ const SB_KEY='sb_publishable_lxiF04jATB1HMLINX-FvOg_3JOjXxrQ';
+ const PORTAL='https://tkichelewski-web.github.io/portal-ip/';
+ const SITE='https://tkichelewski-web.github.io/investigacao-ocorrencias/';
+ const BUCKET='inv-arquivos';
+ const COM_URL='https://script.google.com/macros/s/AKfycbxoBjqY-IXjUx04kD9BUSOUgBLpShui5_y3tvM_dpnzGKmQcr1KhDR4_rhKn3kWq-bzkQ/exec';
+ const COM_CHAVE='SSMAD3C85069E026';
+ const PAPEIS={tecnico:'Técnico de Segurança',supervisor:'Supervisor de Segurança',admin:'Administrador SSMA'};
+ const sb=supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:true,storageKey:'sistema-ip-auth'}});
+ let eu=null;                       // {email,nome,papel,unidade}
+ const conhecido=new Map();         // id -> {json, atualizado_em}
+ let cfgJson='',timer=null,salvando=false,pendente=false;
+
+ const nomeBonito=n=>String(n||'').toLowerCase().replace(/(^|\s)(\S)/g,(m,a,b)=>a+b.toUpperCase()).replace(/\s(D[aeo]s?|E)\s/g,m=>m.toLowerCase());
+ const iniciais=n=>{const p=String(n||'').trim().split(/\s+/);return ((p[0]||'')[0]||'')+((p.length>1?p[p.length-1]:'')[0]||'')};
+ const tela=(titulo,texto,botao)=>{document.getElementById('app').innerHTML=`<div style="max-width:560px;margin:80px auto;padding:0 24px"><div class="section"><header><h3>${titulo}</h3></header><div class="body"><p style="margin-top:0">${texto}</p>${botao||''}</div></div></div>`};
+ const semTags=t=>String(t??'').replace(/<br\s*\/?>/gi,' ').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
+ const nrm=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().trim();
+ const cc=(o,nomes)=>{for(const n of nomes){const k=Object.keys(o).find(x=>nrm(x)===nrm(n));if(k&&o[k]!==''&&o[k]!=null)return o[k]}return ''};
+ const sigla=u=>{const n=nrm(u);return n.includes('JABOTICABAL')||n==='JB'?'JB':n.includes('PEREIRA')||n==='PB'?'PB':''};
+ /* fotos vão para o Storage; no banco fica só o caminho */
+ const paraBanco=inv=>{const c=JSON.parse(JSON.stringify(inv));c.fotos=(c.fotos||[]).map(f=>f.path?{...f,src:''}:f);return c};
+
+ /* ---------- salvar ---------- */
+ function agendar(){pendente=true;clearTimeout(timer);timer=setTimeout(flush,1200);marca('Salvando...')}
+ function marca(t){const el=document.getElementById('salvoMsg');if(el)el.textContent=t}
+ async function flush(){
+  if(salvando){agendar();return}
+  salvando=true;pendente=false;let erro=null;
+  try{
+   for(const inv of DB.investigacoes){
+    if(!inv.id)continue;
+    const d=paraBanco(inv),j=JSON.stringify(d),k=conhecido.get(inv.id);
+    if(k&&k.json===j)continue;
+    const agora=new Date().toISOString();
+    const linha={id:inv.id,unidade:inv.ocorrencia.unidade,status:inv.status,oco_senior:inv.ocorrencia.ocoSenior?+inv.ocorrencia.ocoSenior:null,comunicado:inv.ocorrencia.comunicado||null,dados:d,atualizado_por:eu.nome,atualizado_em:agora};
+    if(!k){
+     const {error}=await sb.from('investigacoes').insert({...linha,criado_por:eu.nome});
+     if(error){erro=error.message;continue}
+    }else{
+     const {data,error}=await sb.from('investigacoes').update(linha).eq('id',inv.id).eq('atualizado_em',k.atualizado_em).select('id');
+     if(error){erro=error.message;continue}
+     if(!data||!data.length){erro='conflito';toast(`Outra pessoa alterou a ${inv.id} enquanto você editava. Recarregue a página (F5) para ver a versão atual antes de continuar.`,true);continue}
+    }
+    conhecido.set(inv.id,{json:j,atualizado_em:agora});
+   }
+   if(P.config()){const cj=JSON.stringify(DB.config);if(cj!==cfgJson){const {error}=await sb.from('inv_config').upsert({chave:'geral',valor:DB.config,atualizado_por:eu.nome,atualizado_em:new Date().toISOString()});if(error)erro=error.message;else cfgJson=cj}}
+  }catch(x){erro=x.message||String(x)}
+  salvando=false;
+  if(erro&&erro!=='conflito'){marca('Não salvo');toast('Não foi possível salvar no servidor: '+erro+'. Tentando de novo...',true);clearTimeout(timer);timer=setTimeout(flush,8000);pendente=true}
+  else if(!pendente)marca('Salvo');
+ }
+ window.addEventListener('beforeunload',e=>{if(pendente||salvando){e.preventDefault();e.returnValue=''}});
+ try{localStorage.removeItem('inv-ssma-v2')}catch(e){}
+ DBX.save=function(){try{localStorage.setItem('inv-unidade',DB.unidade)}catch(e){}agendar()};
+ DBX.load=function(){};DBX.reset=function(){};
+
+ /* ---------- arquivos ---------- */
+ async function subirFoto(inv,canvas){
+  const blob=await new Promise(r=>canvas.toBlob(r,'image/jpeg',0.8));
+  const path=`${inv.id}/fotos/${uid()}.jpg`;
+  const {error}=await sb.storage.from(BUCKET).upload(path,blob,{contentType:'image/jpeg'});
+  if(error)throw error;return path;
+ }
+ async function carregarFotos(inv){
+  const falta=(inv.fotos||[]).filter(f=>f.path&&!f.src);if(!falta.length)return;
+  await Promise.all(falta.map(async f=>{const {data}=await sb.storage.from(BUCKET).download(f.path);if(data)f.src=await new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(data)})}));
+  if(S===inv&&VIEW==='inv')render();
+ }
+ async function anexarPdf(f){
+  const inv=S;const path=`${inv.id}/relatorio-assinado-${Date.now()}.pdf`;
+  const {error}=await sb.storage.from(BUCKET).upload(path,f,{contentType:'application/pdf'});
+  if(error){toast('O PDF não foi enviado: '+error.message,true);fecharModal();return}
+  inv.pdf={nome:f.name,path,data:brDate(today()),por:eu.nome};inv.status='concluida';inv.concluidaEm=today();
+  hist(inv,'Concluída com o PDF assinado anexado',f.name);fecharModal();DBX.save();
+  await sincronizarIP(inv,false);DBX.save();render();toast('Investigação concluída.');
+ }
+ async function abrirPdf(inv){
+  const {data,error}=await sb.storage.from(BUCKET).createSignedUrl(inv.pdf.path,600);
+  if(error){toast('Não consegui abrir o PDF: '+error.message,true);return}window.open(data.signedUrl,'_blank','noopener');
+ }
+
+ /* ---------- IP: preenche a investigação na tabela acidentes ---------- */
+ const comiteConforme=inv=>CONFIG.comiteMinimo(inv.ocorrencia.classificacao).every(p=>inv.comite.some(c=>c.papel===p&&String(c.nome||'').trim()))&&!!String(inv.responsavel.nome||'').trim();
+ async function sincronizarIP(inv,manual){
+  const o=inv.ocorrencia,v=inv.envolvido;
+  try{
+   const resp=(CONFIG.np[o.classificacao]||{}).resp||'';
+   const dados={inv_data_conclusao:inv.concluidaEm||today(),inv_comite_conforme:comiteConforme(inv),inv_responsavel:inv.responsavel.nome||null,
+    inv_responsavel_nivel:/gerente/i.test(resp)?'Gerente':'Supervisor',inv_cipa:(inv.comite.find(c=>c.papel==='Representante CIPA')||{}).nome||null,
+    inv_relatorio_url:SITE+'#inv-'+inv.id,inv_observacoes:'Registrado pelo sistema de investigação ('+inv.id+')',
+    inv_registrado_por:eu.nome,atualizado_por:eu.nome,atualizado_por_email:eu.email};
+   const {data:id,error}=await sb.rpc('inv_enviar_ip',{p_comunicado:o.comunicado||null,p_data:o.data||null,p_matricula:v.matricula?String(v.matricula):null,p_dados:dados});
+   if(error)throw error;
+   if(!id){inv.ip={ok:false,msg:'Ocorrência não encontrada na tela do IP (Investigação de Acidentes). Classifique o comunicado lá e clique em Enviar ao IP.',em:nowStr()};if(manual)toast(inv.ip.msg,true);DBX.save();return}
+   const ac={id};
+   inv.ip={ok:true,em:nowStr(),acidente:ac.id,conforme:dados.inv_comite_conforme};hist(inv,'Conclusão enviada ao IP',dados.inv_comite_conforme?'Comitê conforme':'Comitê NÃO conforme');
+   if(manual)toast('Enviado ao IP.');
+  }catch(x){inv.ip={ok:false,msg:'Não foi possível gravar no IP: '+(x.message||x),em:nowStr()};if(manual)toast(inv.ip.msg,true)}
+  DBX.save();
+ }
+
+ /* ---------- comunicados (formulário / Apps Script) ---------- */
+ async function lerComunicados(){
+  try{
+   const desde=addDays(today(),-90);
+   const r=await fetch(COM_URL+'?acao=comunicados&chave='+encodeURIComponent(COM_CHAVE)+'&desde='+desde);const j=await r.json();if(j.erro)throw new Error(j.erro);
+   COMUNICADOS=(j.comunicados||[]).map(c=>{const tipo=/incid/i.test(cc(c,['Tipo']))?'Incidente':'Acidente';
+    return {id:String(cc(c,['Código'])),tipo,unidade:sigla(cc(c,['Unidade'])),setor:String(cc(c,['Setor','Supervisão'])||cc(c,['Gerência','Gerencia'])||''),
+     local:[cc(c,['Item','Local / Frente','Local']),cc(c,['Complemento do local'])].filter(Boolean).join(' › '),data:String(cc(c,['Data'])).slice(0,10),
+     hora:String(cc(c,['Hora'])||'').slice(0,5),turno:String(cc(c,['Turno'])||''),descricao:semTags(cc(c,['Descrição','Descricao'])),perda:['Pessoal']}}).filter(c=>c.id&&c.unidade);
+  }catch(x){COMUNICADOS=[];console.warn('Comunicados:',x)}
+ }
+
+ /* ---------- início ---------- */
+ async function iniciar(){
+  tela('Carregando...','Conectando ao servidor.');
+  const {data:{session}}=await sb.auth.getSession();
+  if(!session){location.replace(PORTAL+'?voltar='+encodeURIComponent(location.href.split('#')[0]));return}
+  const email=String(session.user.email||'').toLowerCase();
+  const {data:u,error:eu0}=await sb.from('inv_usuarios').select('*').eq('email',email).maybeSingle();
+  if(eu0||!u||u.ativo===false){tela('Sem acesso',`O e-mail <b>${esc(email)}</b> não tem acesso ao sistema de investigação. Fale com a administradora do SSMA.`,`<a class="btn" href="${PORTAL}">Voltar ao Portal</a>`);return}
+  eu={email,nome:nomeBonito(u.nome),papel:u.papel,unidade:u.unidade==='USA'?null:u.unidade};
+  USERS[eu.papel]={nome:eu.nome,ini:iniciais(eu.nome).toUpperCase(),perfil:PAPEIS[eu.papel],unidade:eu.papel==='admin'?null:eu.unidade};
+  SENIOR_VINCULO={};
+  const [ri,rc,rb,rs]=await Promise.all([
+   sb.from('investigacoes').select('id,dados,atualizado_em'),
+   sb.from('inv_config').select('valor').eq('chave','geral').maybeSingle(),
+   sb.from('inv_base_historica').select('dados').order('id'),
+   sb.from('ocorrencias_senior').select('*'),
+   lerComunicados()]);
+  if(ri.error){tela('Erro ao carregar',esc(ri.error.message));return}
+  DB={investigacoes:(ri.data||[]).map(r=>r.dados),config:Object.assign({prazos:{},calcUrl:''},(rc.data&&rc.data.valor)||{}),perfil:eu.papel,unidade:(()=>{try{return localStorage.getItem('inv-unidade')}catch(e){return null}})()||eu.unidade||'JB'};
+  Object.entries(CONFIG.np).forEach(([k,v])=>{if(!DB.config.prazos[k])DB.config.prazos[k]=String(v.dias)});
+  cfgJson=JSON.stringify(DB.config);
+  (ri.data||[]).forEach(r=>conhecido.set(r.id,{json:JSON.stringify(r.dados),atualizado_em:r.atualizado_em}));
+  DB.investigacoes.forEach(i=>syncClass(i));
+  BASE=(rb.data||[]).map(r=>r.dados);
+  SENIOR=(rs.data||[]).map(s=>({...s,matricula_acidentado:s.matricula_acidentado==null?'':String(s.matricula_acidentado)}));
+  const cg=SENIOR.map(s=>s.carga).filter(Boolean).sort().pop();SENIOR_CARGA=cg?String(cg).replace('T',' ').slice(0,16):'—';
+  route();
+ }
+ const _r=route;route=function(){_r();if(S&&VIEW==='inv')carregarFotos(S)};
+ window.removeEventListener('hashchange',_r);window.addEventListener('hashchange',route);
+ return {iniciar,anexarPdf,abrirPdf,subirFoto,sincronizarIP,sair:async()=>{await sb.auth.signOut();location.href=PORTAL}};
+})();
+function ipInfo(inv){const ip=inv.ip;
+ if(ip&&ip.ok)return `<div class="strip o"><div><b>Enviado ao IP</b> em ${esc(ip.em)} · comitê ${ip.conforme?'conforme':'<b>não conforme</b>'} (tela Investigação de Acidentes).</div></div>`;
+ return `<div class="strip"><div><b>Ainda não foi para o IP.</b> ${esc(ip?ip.msg:'A conclusão não foi enviada à tela Investigação de Acidentes.')} <button class="btn sm" data-act="enviarIP" style="margin-left:6px">Enviar ao IP</button></div></div>`}
+PROD.iniciar();
